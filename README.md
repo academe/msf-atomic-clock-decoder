@@ -11,4 +11,3 @@ The library will use interrupts, so the ESP/Arduino can carry on doing other thi
 The main components are:
 
     carrier on/off timer -> state machine bit extractor -> date and time constructor -> clock display
-    
