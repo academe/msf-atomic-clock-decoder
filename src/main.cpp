@@ -73,6 +73,8 @@ volatile bool lockedMinuteMarker = false;
 
 unsigned long lastSecondsNumber = 0;
 
+// Replace constants with an enum.
+const int CARRIER_STATE_MINUTE_MARKER_WAIT = 10;
 const int CARRIER_STATE_START = 0;
 const int CARRIER_STATE_MINUTE_MARKER = 1;
 const int CARRIER_STATE_11_COMPLETE = 2;
@@ -81,9 +83,22 @@ const int CARRIER_STATE_0X = 4;
 const int CARRIER_STATE_01 = 5;
 const int CARRIER_STATE_01_COMPLETE = 6;
 
+enum class States {
+  wait_minute_marker_start,
+  wait_minute_marker_end,
+  wait_next_second,
+  wait_11_end,
+  wait_10_end,
+  wait_0X_bit_2,
+  wait_01_bit_2_end,
+  wait_01_end
+};
+
+
 // Details for the state machine
 
 struct msfState {
+
   struct {
     bool A = 0;
     bool B = 0;
@@ -91,15 +106,17 @@ struct msfState {
 
   // True when locked to the minute marker, meaning the date and
   // time is being parsed.
-  bool lockedMinuteMarker = false;
+  bool lockedMinuteMarker = 0;
 
   // Seconds number, 0 to 59, and exceptionally 60.
   // Only incremented when the minute marker has been locked in.
   unsigned int secondsNumber = 0;
 
   // The current state when counting bits.
-  byte state = 0;
+  States state = States::wait_minute_marker_start;
 };
+
+volatile msfState stateMachine;
 
 /**
  * @brief round a number to the nearest unit of 10^places
@@ -153,9 +170,128 @@ void IRAM_ATTR readCarrierStateTime(volatile msfCarrierStateTime *carrier, int p
  * @param msfCarrierStateTime
  * @return bool true if a pair of bits and a seconds number is ready
  */
-bool msfNextState(volatile msfState *msfState, volatile msfCarrierStateTime *carrier)
+bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
 {
-  return 0;
+  // Replace state numbers with a short code or letter to be easier to read.
+  // swith only handles integer expressions - doh
+  // switch (sprintf("%d:%s:%d", msfState->state, carrierOn ? "H" : "L", divCount)) {
+  //   // The first half of a minute marker.
+  //   // \⎽⎽⎽⎽⎽/
+  //   //  MMMMM
+
+  //   case "MM_SEARCH:L:5":
+  //     msfState->state = 999; // The new state.
+  //     break;
+
+  //   default:
+  //     // Unexpected state; go back to minute marker searching.
+  //     break;
+  // };
+
+
+  switch (msfState->state) {
+    case States::wait_minute_marker_start:
+      msfState->lockedMinuteMarker = 0;
+      if (divCount == 5 && ! carrierOn) {
+        msfState->state = States::wait_minute_marker_end;
+        msfState->bits.A = 1;
+        msfState->bits.B = 1;
+      }
+      break;
+
+    case States::wait_minute_marker_end:
+      if (divCount == 5 && carrierOn) {
+        msfState->lockedMinuteMarker = 1;
+        msfState->secondsNumber = 0;
+        msfState->state = States::wait_next_second;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+    case States::wait_next_second:
+      if (carrierOn) {
+        msfState->state = States::wait_minute_marker_start;
+        break;
+      }
+      msfState->secondsNumber++;
+      if (divCount == 1) {
+        msfState->state = States::wait_0X_bit_2;
+        break;
+      }
+      if (divCount == 2) {
+        msfState->state = States::wait_10_end;
+        msfState->bits.A = 1;
+        msfState->bits.B = 0;
+        break;
+      }
+      if (divCount == 3) {
+        msfState->state = States::wait_11_end;
+        msfState->bits.A = 1;
+        msfState->bits.B = 1;
+        break;
+      }
+      // Is this one really needed? Probably, to keep the minute marker lock true.
+      if (divCount == 5) {
+        msfState->state = States::wait_minute_marker_end;
+        msfState->bits.A = 1;
+        msfState->bits.B = 1;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+    case States::wait_11_end:
+      if (divCount == 7 && carrierOn) {
+        msfState->state = States::wait_next_second;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+    case States::wait_10_end:
+      if (divCount == 8 && carrierOn) {
+        msfState->state = States::wait_next_second;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+    case States::wait_0X_bit_2:
+      if (divCount == 9 && carrierOn) {
+        msfState->state = States::wait_next_second;
+        msfState->bits.A = 0;
+        msfState->bits.B = 0;
+        break;
+      }
+      if (divCount == 1 && carrierOn) {
+        msfState->state = States::wait_01_bit_2_end;
+        msfState->bits.A = 0;
+        msfState->bits.B = 1;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+    case States::wait_01_bit_2_end:
+      if (divCount == 1 && !carrierOn) {
+        msfState->state = States::wait_01_end;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+    case States::wait_01_end:
+      if (divCount == 7 && carrierOn) {
+        msfState->state = States::wait_next_second;
+        break;
+      }
+      msfState->state = States::wait_minute_marker_start;
+      break;
+
+  };
+
+  return 0; // @todo
 }
 
 /**
@@ -188,172 +324,7 @@ void IRAM_ATTR Ext_INT1_MSF()
 
   readCarrierStateTime(&carrier, digitalRead(GPIO_MSF_in));
 
-  // In the state machine, we will go through all the states of each
-  // second, just to make sure there are no spurious errors. In theory,
-  // we only need the first 300mS to determine what the result is.
-  // However, we trigger only on rising and falling edges, so for a
-  // "00" pair we won't know the result until the start of the next
-  // second. Following through all the states keeps that timing
-  // consistent for all bit pairs.
-
-  // The main waiting state.
-  // Key:
-  // S = start div, 100mS of carrier off.
-  // M = minute marker precurser, 500mS carrier off.
-  // 1 = decoded data bit, carrier off.
-  // 0 = decoded data bit, carrier on.
-  // P = padding to end of second, carrier on.
-
-  // Waiting for the start of the next second (a carrier off for
-  // at least 100mS).
-
-  if (state == CARRIER_STATE_START) {
-
-    if (carrier.carrierOn) {
-      return;
-    }
-
-    switch (carrier.divCount) {
-      // The first half of a minute marker.
-      // \⎽⎽⎽⎽⎽/
-      //  MMMMM
-      case 5: state = CARRIER_STATE_MINUTE_MARKER;
-      break;
-
-      // \⎽⎽⎽/
-      //  S11
-      case 3: state = CARRIER_STATE_11_COMPLETE;
-      break;
-
-      // \⎽⎽⎽/
-      //  S10
-      case 2: state = CARRIER_STATE_10_COMPLETE;
-      break;
-
-      // Either 00 or 01; we need to see what happens next.
-      // \⎽/
-      //  S
-      case 1: state = CARRIER_STATE_0X;
-      break;
-    }
-
-    return;
-  }
-
-  // Waiting for the minute marker second to finish.
-
-  if (state == CARRIER_STATE_MINUTE_MARKER) {
-    if (carrier.carrierOn && carrier.divCount == 5) {
-      // \⎽⎽⎽⎽⎽/⎺⎺⎺⎺⎺\
-      //  SSSSS PPPPP
-      // Reset the seconds counter.
-      secondsNumber = 0;
-      lockedMinuteMarker = true;
-    }
-
-    state = CARRIER_STATE_START;
-
-    return;
-  }
-
-  // Waiting for the 11 second to finish.
-
-  if (state == CARRIER_STATE_11_COMPLETE) {
-    if (carrier.carrierOn && carrier.divCount == 7) {
-      // \⎽⎽⎽/⎺⎺⎺⎺⎺⎺⎺\
-      //  S11 0000000
-      if (lockedMinuteMarker) secondsNumber++;
-
-      bits.A = 1;
-      bits.B = 1;
-    }
-
-    state = CARRIER_STATE_START;
-
-    return;
-  }
-
-  // Waiting for the 10 second to finish.
-
-  if (state == CARRIER_STATE_10_COMPLETE) {
-    if (carrier.carrierOn && carrier.divCount == 8) {
-      // \⎽⎽/⎺⎺⎺⎺⎺⎺⎺⎺\
-      //  S1 0PPPPPPP
-      if (lockedMinuteMarker) secondsNumber++;
-
-      bits.A = 1;
-      bits.B = 0;
-    }
-
-    state = CARRIER_STATE_START;
-
-    return;
-  }
-
-  // Waiting for the 0X first bit to finish.
-  // For 00 the first bit, second bit and the
-  // padding will run into one.
-
-  if (state == CARRIER_STATE_0X) {
-    if (carrier.carrierOn && carrier.divCount == 9) {
-      // \⎽/⎺⎺⎺⎺⎺⎺⎺⎺⎺\
-      //  S 00PPPPPPP
-
-      if (lockedMinuteMarker) secondsNumber++;
-
-      bits.A = 0;
-      bits.B = 0;
-
-      state = CARRIER_STATE_START;
-
-      return;
-    }
-
-    if (carrier.carrierOn && carrier.divCount == 1) {
-      // In theory this is enough to determie 01, since the next
-      // div can only be a single carrier off (logic 1). But we
-      // carry on for error checking.
-
-      // \⎽/⎺\
-      //  S 0
-
-      state = CARRIER_STATE_01;
-
-      return;
-    }
-  }
-
-  // Waiting for the 01 second bit to finish.
-
-  if (state == CARRIER_STATE_01) {
-    if (carrier.carrierOff && carrier.divCount == 1) {
-      // \⎽/⎺\⎽/
-      //  S 0 1
-
-      state = CARRIER_STATE_01_COMPLETE;
-
-      return;
-    }
-  }
-
-  // Waiting for the 01 second to finish.
-
-  if (state == CARRIER_STATE_01_COMPLETE) {
-    if (carrier.carrierOn && carrier.divCount == 7) {
-      // ⎺\⎽/⎺\⎽/⎺⎺⎺⎺⎺⎺⎺\
-      // P S 0 1 PPPPPPP
-      if (lockedMinuteMarker) secondsNumber++;
-
-      bits.A = 0;
-      bits.B = 1;
-
-      state = CARRIER_STATE_START;
-
-      return;
-    }
-  }
-
-  state = CARRIER_STATE_START;
+  msfNextState(&stateMachine, carrier.carrierOn, carrier.divCount);
 }
 
 void setup()
@@ -392,6 +363,7 @@ void setup()
   // use CHANGE to catch both up and down edges.
 
   digitalPinToInterrupt(GPIO_MSF_in);
+
   // RISING FALLING HIGH LOW CHANGE
   attachInterrupt(GPIO_MSF_in, Ext_INT1_MSF, CHANGE);
 
@@ -402,17 +374,28 @@ void setup()
   // WiFi.forceSleepBegin();
 }
 
+int carrierOn = 0;
+
 void loop()
 {
-  if (lastSecondsNumber != secondsNumber) {
+  if (lastSecondsNumber != stateMachine.secondsNumber) {
     // Serial.printf("%d bits in state %s\n", divCount, carrierOff ? "1" : "0");
 
-    Serial.printf("%d = %d%d\n", secondsNumber, bits.A, bits.B);
+    // Serial.printf("%d = %d%d \n", secondsNumber, bits.A, bits.B);
+    Serial.printf("%d %02d %d%d\n", stateMachine.lockedMinuteMarker, stateMachine.secondsNumber, stateMachine.bits.A, stateMachine.bits.B);
 
-    lastSecondsNumber = secondsNumber;
+    // Serial.printf("%d\n", States::wait_minute_marker_end);
+
+    lastSecondsNumber = stateMachine.secondsNumber;
 
     // display.display(); // We want to do this only if a state has changed.
   }
+
+  // if (carrierOn != carrier.carrierOn) {
+  //   // Serial.printf(".");
+  //   Serial.printf(" %s:%d ", (carrier.carrierOn ? "ON" : "OFF"), carrier.divCount);
+  //   carrierOn = carrier.carrierOn;
+  // }
 
   // delay(1);
 }

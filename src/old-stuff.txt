@@ -1,0 +1,327 @@
+  // In the state machine, we will go through all the states of each
+  // second, just to make sure there are no spurious errors. In theory,
+  // we only need the first 300mS to determine what the result is.
+  // However, we trigger only on rising and falling edges, so for a
+  // "00" pair we won't know the result until the start of the next
+  // second. Following through all the states keeps that timing
+  // consistent for all bit pairs.
+
+  // The main waiting state.
+  // Key:
+  // S = start div, 100mS of carrier off.
+  // M = minute marker precurser, 500mS carrier off.
+  // 1 = decoded data bit, carrier off.
+  // 0 = decoded data bit, carrier on.
+  // P = padding to end of second, carrier on.
+
+  // Waiting for the start of the next second (a carrier off for
+  // at least 100mS).
+
+  if (state == CARRIER_STATE_START) {
+
+    if (carrier.carrierOn) {
+      return;
+    }
+
+    switch (carrier.divCount) {
+      // The first half of a minute marker.
+      // \⎽⎽⎽⎽⎽/
+      //  MMMMM
+      case 5: state = CARRIER_STATE_MINUTE_MARKER;
+      break;
+
+      // \⎽⎽⎽/
+      //  S11
+      case 3: state = CARRIER_STATE_11_COMPLETE;
+      break;
+
+      // \⎽⎽⎽/
+      //  S10
+      case 2: state = CARRIER_STATE_10_COMPLETE;
+      break;
+
+      // Either 00 or 01; we need to see what happens next.
+      // \⎽/
+      //  S
+      case 1: state = CARRIER_STATE_0X;
+      break;
+    }
+
+    return;
+  }
+
+  // Waiting for the minute marker second to finish.
+
+  if (state == CARRIER_STATE_MINUTE_MARKER) {
+    if (carrier.carrierOn && carrier.divCount == 5) {
+      // \⎽⎽⎽⎽⎽/⎺⎺⎺⎺⎺\
+      //  SSSSS PPPPP
+      // Reset the seconds counter.
+      secondsNumber = 0;
+      lockedMinuteMarker = true;
+    }
+
+    state = CARRIER_STATE_START;
+
+    return;
+  }
+
+  // Waiting for the 11 second to finish.
+
+  if (state == CARRIER_STATE_11_COMPLETE) {
+    if (carrier.carrierOn && carrier.divCount == 7) {
+      // \⎽⎽⎽/⎺⎺⎺⎺⎺⎺⎺\
+      //  S11 0000000
+      if (lockedMinuteMarker) secondsNumber++;
+
+      bits.A = 1;
+      bits.B = 1;
+    }
+
+    state = CARRIER_STATE_START;
+
+    return;
+  }
+
+  // Waiting for the 10 second to finish.
+
+  if (state == CARRIER_STATE_10_COMPLETE) {
+    if (carrier.carrierOn && carrier.divCount == 8) {
+      // \⎽⎽/⎺⎺⎺⎺⎺⎺⎺⎺\
+      //  S1 0PPPPPPP
+      if (lockedMinuteMarker) secondsNumber++;
+
+      bits.A = 1;
+      bits.B = 0;
+    }
+
+    state = CARRIER_STATE_START;
+
+    return;
+  }
+
+  // Waiting for the 0X first bit to finish.
+  // For 00 the first bit, second bit and the
+  // padding will run into one.
+
+  if (state == CARRIER_STATE_0X) {
+    if (carrier.carrierOn && carrier.divCount == 9) {
+      // \⎽/⎺⎺⎺⎺⎺⎺⎺⎺⎺\
+      //  S 00PPPPPPP
+
+      if (lockedMinuteMarker) secondsNumber++;
+
+      bits.A = 0;
+      bits.B = 0;
+
+      state = CARRIER_STATE_START;
+
+      return;
+    }
+
+    if (carrier.carrierOn && carrier.divCount == 1) {
+      // In theory this is enough to determie 01, since the next
+      // div can only be a single carrier off (logic 1). But we
+      // carry on for error checking.
+
+      // \⎽/⎺\
+      //  S 0
+
+      state = CARRIER_STATE_01;
+
+      return;
+    }
+  }
+
+  // Waiting for the 01 second bit to finish.
+
+  if (state == CARRIER_STATE_01) {
+    if (carrier.carrierOff && carrier.divCount == 1) {
+      // \⎽/⎺\⎽/
+      //  S 0 1
+
+      state = CARRIER_STATE_01_COMPLETE;
+
+      return;
+    }
+  }
+
+  // Waiting for the 01 second to finish.
+
+  if (state == CARRIER_STATE_01_COMPLETE) {
+    if (carrier.carrierOn && carrier.divCount == 7) {
+      // ⎺\⎽/⎺\⎽/⎺⎺⎺⎺⎺⎺⎺\
+      // P S 0 1 PPPPPPP
+      if (lockedMinuteMarker) secondsNumber++;
+
+      bits.A = 0;
+      bits.B = 1;
+
+      state = CARRIER_STATE_START;
+
+      return;
+    }
+  }
+
+  state = CARRIER_STATE_START;
+
+
+----------------
+
+
+
+
+
+    // case CARRIER_STATE_MINUTE_MARKER_WAIT:
+
+    //   msfState->lockedMinuteMarker = 0;
+
+    //   // The first half of a minute marker.
+    //   // \⎽⎽⎽⎽⎽/
+    //   //  MMMMM
+
+    //   if (divCount == 5 && ! carrierOn) {
+    //     msfState->state = CARRIER_STATE_MINUTE_MARKER;
+    //   }
+
+    //   break;
+
+    // case CARRIER_STATE_MINUTE_MARKER:
+
+    //   if (divCount == 5 && carrierOn) {
+    //     msfState->state = CARRIER_STATE_START;
+    //     msfState->lockedMinuteMarker = 1;
+    //     msfState->secondsNumber = 0;
+    //   }
+
+    //   break;
+
+    // case CARRIER_STATE_START:
+
+    //   if (carrierOn) {
+    //     msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //     break;
+    //   }
+
+    //   // \⎽⎽⎽/
+    //   //  S11
+    //   if (divCount == 3) {
+    //     msfState->bits.A = 1;
+    //     msfState->bits.B = 1;
+    //     msfState->state = CARRIER_STATE_11_COMPLETE;
+    //     break;
+    //   }
+
+    //   // \⎽⎽⎽/
+    //   //  S10
+
+    //   if (divCount == 2) {
+    //     msfState->state = CARRIER_STATE_10_COMPLETE;
+    //     msfState->bits.A = 1;
+    //     msfState->bits.B = 0;
+    //     break;
+    //   }
+
+    //   // Either 00 or 01; we need to see what happens next.
+    //   // \⎽/
+    //   //  S
+
+    //   if (divCount == 1) {
+    //     msfState->state = CARRIER_STATE_0X;
+    //     break;
+    //   }
+
+    //   msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //   break;
+
+    // // Waiting for the 11 second to finish.
+
+    // case CARRIER_STATE_11_COMPLETE:
+
+    //   if (carrierOn && divCount == 7) {
+    //     // \⎽⎽⎽/⎺⎺⎺⎺⎺⎺⎺\
+    //     //  S11 0000000
+
+    //     msfState->secondsNumber++;
+    //     break;
+    //   }
+
+    //   msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //   break;
+
+    //   // Waiting for the 10 second to finish.
+
+    // case CARRIER_STATE_10_COMPLETE:
+    //   if (carrierOn && divCount == 8) {
+    //     // \⎽⎽/⎺⎺⎺⎺⎺⎺⎺⎺\
+    //     //  S1 0PPPPPPP
+
+    //     msfState->secondsNumber++;
+    //     msfState->state = CARRIER_STATE_START;
+    //     break;
+    //   }
+
+    //   msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //   break;
+
+    //   // Waiting for the 0X first bit to finish.
+    //   // For 00 the first bit, second bit and the
+    //   // padding will run into one.
+
+    // case CARRIER_STATE_0X:
+    //   if (carrierOn && divCount == 9) {
+    //     // \⎽/⎺⎺⎺⎺⎺⎺⎺⎺⎺\
+    //     //  S 00PPPPPPP
+
+    //     msfState->secondsNumber++;
+    //     msfState->bits.A = 0;
+    //     msfState->bits.B = 0;
+    //     msfState->state = CARRIER_STATE_START;
+    //     break;
+    //   }
+
+    //   if (carrierOn && divCount == 1) {
+    //     // In theory this is enough to determie 01, since the next
+    //     // div can only be a single carrier off (logic 1). But we
+    //     // carry on for error checking.
+
+    //     // \⎽/⎺\
+    //     //  S 0
+
+    //     msfState->state = CARRIER_STATE_01;
+    //     break;
+    //   }
+
+    //   msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //   break;
+
+    // // Waiting for the 01 second bit to finish.
+
+    // case CARRIER_STATE_01:
+    //   if (! carrierOn && divCount == 1) {
+    //     // \⎽/⎺\⎽/
+    //     //  S 0 1
+
+    //     msfState->state = CARRIER_STATE_01_COMPLETE;
+    //     break;
+    //   }
+
+    //   msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //   break;
+
+    // // Waiting for the 01 second to finish.
+
+    // case CARRIER_STATE_01_COMPLETE:
+    //   if (carrierOn && divCount == 7) {
+    //     // ⎺\⎽/⎺\⎽/⎺⎺⎺⎺⎺⎺⎺\
+    //     // P S 0 1 PPPPPPP
+        
+    //     msfState->secondsNumber++;
+    //     msfState->bits.A = 0;
+    //     msfState->bits.B = 1;
+    //     msfState->state = CARRIER_STATE_START;
+    //     break;
+    //   }
+
+    //   msfState->state = CARRIER_STATE_MINUTE_MARKER_WAIT;
+    //   break;
