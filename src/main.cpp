@@ -89,7 +89,7 @@ enum class States {
   wait_next_second,
   wait_11_end,
   wait_10_end,
-  wait_0X_bit_2,
+  wait_0X_bit_1_end,
   wait_01_bit_2_end,
   wait_01_end
 };
@@ -190,17 +190,19 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
 
 
   switch (msfState->state) {
+    // Waiting for 5 divs carrier OFF to start the first minute,
+    // or the next minute after losing the sync.
     case States::wait_minute_marker_start:
       msfState->lockedMinuteMarker = 0;
       if (divCount == 5 && ! carrierOn) {
         msfState->state = States::wait_minute_marker_end;
-        msfState->bits.A = 1;
-        msfState->bits.B = 1;
       }
       break;
 
+    // Waiting for 5 divs carrier ON
     case States::wait_minute_marker_end:
       if (divCount == 5 && carrierOn) {
+        // Got it. That's the start of a minute.
         msfState->lockedMinuteMarker = 1;
         msfState->secondsNumber = 0;
         msfState->state = States::wait_next_second;
@@ -209,80 +211,96 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
       msfState->state = States::wait_minute_marker_start;
       break;
 
+    // Waiting for the carrier OFF at the start of the second to
+    // capture the start bit and any initial "1" bits.
     case States::wait_next_second:
       if (carrierOn) {
         msfState->state = States::wait_minute_marker_start;
         break;
       }
       msfState->secondsNumber++;
+      // Will be 00 or 01. Don't know which yet.
       if (divCount == 1) {
-        msfState->state = States::wait_0X_bit_2;
+        msfState->state = States::wait_0X_bit_1_end;
         break;
       }
+      // One carrier off div after start bit, so must be a 10.
+      // Still wait until the end of the second before calling it.
       if (divCount == 2) {
         msfState->state = States::wait_10_end;
-        msfState->bits.A = 1;
-        msfState->bits.B = 0;
         break;
       }
+      // Two carrier off divs after the start bit, so is a 11.
+      // Still wait until the end of the second before calling it.
       if (divCount == 3) {
         msfState->state = States::wait_11_end;
-        msfState->bits.A = 1;
-        msfState->bits.B = 1;
         break;
       }
-      // Is this one really needed? Probably, to keep the minute marker lock true.
+      // 
       if (divCount == 5) {
         msfState->state = States::wait_minute_marker_end;
-        msfState->bits.A = 1;
-        msfState->bits.B = 1;
         break;
       }
       msfState->state = States::wait_minute_marker_start;
       break;
 
+    // Wait for the 7 divs to the end of the second for a 11.
     case States::wait_11_end:
       if (divCount == 7 && carrierOn) {
+        msfState->bits.A = 1;
+        msfState->bits.B = 1;
         msfState->state = States::wait_next_second;
         break;
       }
       msfState->state = States::wait_minute_marker_start;
       break;
 
+    // Wait for the 8 divs to the end of the second for a 10.
     case States::wait_10_end:
       if (divCount == 8 && carrierOn) {
+        msfState->bits.A = 1;
+        msfState->bits.B = 0;
         msfState->state = States::wait_next_second;
         break;
       }
       msfState->state = States::wait_minute_marker_start;
       break;
 
-    case States::wait_0X_bit_2:
+    case States::wait_0X_bit_1_end:
+      // After the starting bit, carrier was on right to the end
+      // of the second, giving a 00.
       if (divCount == 9 && carrierOn) {
         msfState->state = States::wait_next_second;
         msfState->bits.A = 0;
         msfState->bits.B = 0;
         break;
       }
+      // Carrier was on just for 1 div, so the second bit will be 1.
+      // Wait until the end of the second before calling it (which is
+      // two carrier transistions away).
       if (divCount == 1 && carrierOn) {
         msfState->state = States::wait_01_bit_2_end;
-        msfState->bits.A = 0;
-        msfState->bits.B = 1;
         break;
       }
       msfState->state = States::wait_minute_marker_start;
       break;
 
+    // Got a 0 after the start bit. Wait for the end of the second bit,
+    // which will be 1 div.
     case States::wait_01_bit_2_end:
-      if (divCount == 1 && !carrierOn) {
+      if (divCount == 1 && ! carrierOn) {
         msfState->state = States::wait_01_end;
         break;
       }
       msfState->state = States::wait_minute_marker_start;
       break;
 
+    // Waiting for the 7 div carrier on after a 01 to take us to
+    // the end of the second.
     case States::wait_01_end:
       if (divCount == 7 && carrierOn) {
+        msfState->bits.A = 0;
+        msfState->bits.B = 1;
         msfState->state = States::wait_next_second;
         break;
       }
@@ -362,10 +380,8 @@ void setup()
   // Only one interrupt can be added to a pin, so we must
   // use CHANGE to catch both up and down edges.
 
-  digitalPinToInterrupt(GPIO_MSF_in);
-
   // RISING FALLING HIGH LOW CHANGE
-  attachInterrupt(GPIO_MSF_in, Ext_INT1_MSF, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(GPIO_MSF_in), Ext_INT1_MSF, CHANGE);
 
   // ESP.deepSleep(1000, WAKE_RF_DISABLED); // Not working
 
@@ -378,6 +394,12 @@ int carrierOn = 0;
 
 void loop()
 {
+  // Can this condition be built into the state machine class as a function.
+  // Perhaps stateMachine.getSecond() which will return 0 if there is
+  // no change, or the second number if a new second has been reached.
+  // Seconds go from 1 to 59 (or 58 or 60) with no zero-second. The zero-
+  // second is the end of the second of the last minute, so will be high.
+
   if (lastSecondsNumber != stateMachine.secondsNumber) {
     // Serial.printf("%d bits in state %s\n", divCount, carrierOff ? "1" : "0");
 
