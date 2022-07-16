@@ -10,6 +10,8 @@
 
 #include <Wire.h>               // Only needed for Arduino 1.6.5 and earlier
 #include <SPI.h>
+#include "MSFDecoderCarrier.h"
+
 // #include "SSD1306Wire.h"        // legacy: #include "SSD1306.h"
 // #include <Adafruit_GFX.h>
 // #include <Adafruit_SSD1306.h>
@@ -23,42 +25,14 @@
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
 // Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-#include <ESP8266WiFi.h>
+// #include <ESP8266WiFi.h>
 
 // To monitor the clock input
-byte GPIO_MSF_in = 14;
-
-volatile struct {
-  bool A = 0;
-  bool B = 0;
-} bits;
-
-// The structure for keeping track of the carrier states.
-
-struct msfCarrierStateTime {
-  // The time in mS that the carrier came on (rising edge).
-  unsigned long carrierOnTime = 0;
-
-  // The time in mS that the carrier dropped (falling edge).
-  unsigned long carrierOffTime = 0;
-
-  // The carrier state the last sequence of divisons.
-  // Each division is 100mS, one tenth of a second.
-  // The carrier off represents a logical 1.
-  bool carrierOff = 0;
-  bool carrierOn = 1;
-
-  // The number of divisions that have completed in the above state.
-  // A divCount of 7 will be 700mS.
-  unsigned int divCount = 0;
-
-  // Invert the carrier pin.
-  volatile bool invertCarrier = false;
-};
+unsigned int GPIO_MSF_in = 14;
 
 // For keeping track of the carrier states.
 
-volatile msfCarrierStateTime carrier;
+msfCarrier carrier;
 
 // Second number, 0 to 59, and exceptionally 60.
 // Only increment when locked onto the minute marker.
@@ -71,17 +45,7 @@ volatile unsigned int state = 0;
 // True when locked to the minute marker.
 volatile bool lockedMinuteMarker = false;
 
-unsigned long lastSecondsNumber = 0;
-
-// Replace constants with an enum.
-const int CARRIER_STATE_MINUTE_MARKER_WAIT = 10;
-const int CARRIER_STATE_START = 0;
-const int CARRIER_STATE_MINUTE_MARKER = 1;
-const int CARRIER_STATE_11_COMPLETE = 2;
-const int CARRIER_STATE_10_COMPLETE = 3;
-const int CARRIER_STATE_0X = 4;
-const int CARRIER_STATE_01 = 5;
-const int CARRIER_STATE_01_COMPLETE = 6;
+long lastSecondsNumber = 0;
 
 enum class States {
   wait_minute_marker_start,
@@ -95,7 +59,12 @@ enum class States {
 };
 
 
-// Details for the state machine
+
+
+
+
+// Details for the state machine.
+// Move to class MSFDecoderBitStream
 
 struct msfState {
 
@@ -110,7 +79,8 @@ struct msfState {
 
   // Seconds number, 0 to 59, and exceptionally 60.
   // Only incremented when the minute marker has been locked in.
-  unsigned int secondsNumber = 0;
+  // Will be -1 until the time is locked in.
+  int secondsNumber = -1;
 
   // The current state when counting bits.
   States state = States::wait_minute_marker_start;
@@ -118,45 +88,6 @@ struct msfState {
 
 volatile msfState stateMachine;
 
-/**
- * @brief round a number to the nearest unit of 10^places
- * 
- * @param number the number to round
- * @param place example 2 = round to the nearest 100
- * @return int 
- */
-int round100(int number)
-{
-    int r = number % 100;
-
-    if (r < 50) {
-        return number - r;
-    } else {
-        return number - r + 100;
-    }
-}
-
-/**
- * @brief Read the carrier last state and length of that state
- * 
- * @param carrier 
- */
-void IRAM_ATTR readCarrierStateTime(volatile msfCarrierStateTime *carrier, int pinValue)
-{
-  // Read the current state, and the last state will be the inverse.
-
-  if (pinValue) {
-    carrier->carrierOnTime = millis();
-    carrier->divCount = round100(carrier->carrierOnTime - carrier->carrierOffTime) / 100;
-    carrier->carrierOff = 0;
-    carrier->carrierOn = 1;
-  } else {
-    carrier->carrierOffTime = millis();
-    carrier->divCount = round100(carrier->carrierOffTime - carrier->carrierOnTime) / 100;
-    carrier->carrierOff = 1;
-    carrier->carrierOn = 0;
-  }
-}
 
 /**
  * @brief run the state machine to parse the carrier to bits A and B
@@ -167,10 +98,9 @@ void IRAM_ATTR readCarrierStateTime(volatile msfCarrierStateTime *carrier, int p
  * can be read from the msfState structure.
  * 
  * @param msfState
- * @param msfCarrierStateTime
  * @return bool true if a pair of bits and a seconds number is ready
  */
-bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
+int msfNextState(volatile msfState *msfState, bool carrierOn, unsigned int divCount)
 {
   // Replace state numbers with a short code or letter to be easier to read.
   // swith only handles integer expressions - doh
@@ -194,6 +124,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
     // or the next minute after losing the sync.
     case States::wait_minute_marker_start:
       msfState->lockedMinuteMarker = 0;
+      msfState->secondsNumber = -1;
       if (divCount == 5 && ! carrierOn) {
         msfState->state = States::wait_minute_marker_end;
       }
@@ -205,6 +136,8 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
         // Got it. That's the start of a minute.
         msfState->lockedMinuteMarker = 1;
         msfState->secondsNumber = 0;
+        msfState->bits.A = 1;
+        msfState->bits.B = 1;
         msfState->state = States::wait_next_second;
         break;
       }
@@ -218,7 +151,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
         msfState->state = States::wait_minute_marker_start;
         break;
       }
-      msfState->secondsNumber++;
+      // msfState->secondsNumber++;
       // Will be 00 or 01. Don't know which yet.
       if (divCount == 1) {
         msfState->state = States::wait_0X_bit_1_end;
@@ -236,7 +169,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
         msfState->state = States::wait_11_end;
         break;
       }
-      // 
+      // The start of the next minute.
       if (divCount == 5) {
         msfState->state = States::wait_minute_marker_end;
         break;
@@ -249,6 +182,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
       if (divCount == 7 && carrierOn) {
         msfState->bits.A = 1;
         msfState->bits.B = 1;
+        msfState->secondsNumber++;
         msfState->state = States::wait_next_second;
         break;
       }
@@ -260,6 +194,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
       if (divCount == 8 && carrierOn) {
         msfState->bits.A = 1;
         msfState->bits.B = 0;
+        msfState->secondsNumber++;
         msfState->state = States::wait_next_second;
         break;
       }
@@ -270,9 +205,10 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
       // After the starting bit, carrier was on right to the end
       // of the second, giving a 00.
       if (divCount == 9 && carrierOn) {
-        msfState->state = States::wait_next_second;
         msfState->bits.A = 0;
         msfState->bits.B = 0;
+        msfState->secondsNumber++;
+        msfState->state = States::wait_next_second;
         break;
       }
       // Carrier was on just for 1 div, so the second bit will be 1.
@@ -301,6 +237,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
       if (divCount == 7 && carrierOn) {
         msfState->bits.A = 0;
         msfState->bits.B = 1;
+        msfState->secondsNumber++;
         msfState->state = States::wait_next_second;
         break;
       }
@@ -309,7 +246,7 @@ bool msfNextState(volatile msfState *msfState, bool carrierOn, byte divCount)
 
   };
 
-  return 0; // @todo
+  return msfState->secondsNumber;
 }
 
 /**
@@ -340,9 +277,9 @@ void IRAM_ATTR Ext_INT1_MSF()
 
   // @todo automatic invert if the input looks inverted.
 
-  readCarrierStateTime(&carrier, digitalRead(GPIO_MSF_in));
+  carrier.setCarrierState(digitalRead(GPIO_MSF_in));
 
-  msfNextState(&stateMachine, carrier.carrierOn, carrier.divCount);
+  msfNextState(&stateMachine, carrier.carrierOnState(), carrier.lastDivCount());
 }
 
 void setup()
@@ -401,10 +338,17 @@ void loop()
   // second is the end of the second of the last minute, so will be high.
 
   if (lastSecondsNumber != stateMachine.secondsNumber) {
-    // Serial.printf("%d bits in state %s\n", divCount, carrierOff ? "1" : "0");
 
     // Serial.printf("%d = %d%d \n", secondsNumber, bits.A, bits.B);
-    Serial.printf("%d %02d %d%d\n", stateMachine.lockedMinuteMarker, stateMachine.secondsNumber, stateMachine.bits.A, stateMachine.bits.B);
+    if (stateMachine.secondsNumber != -1) {
+      Serial.printf(
+        "%d %02d %d%d\n",
+        stateMachine.lockedMinuteMarker,
+        stateMachine.secondsNumber,
+        stateMachine.bits.A,
+        stateMachine.bits.B
+      );
+    }
 
     // Serial.printf("%d\n", States::wait_minute_marker_end);
 
@@ -412,12 +356,4 @@ void loop()
 
     // display.display(); // We want to do this only if a state has changed.
   }
-
-  // if (carrierOn != carrier.carrierOn) {
-  //   // Serial.printf(".");
-  //   Serial.printf(" %s:%d ", (carrier.carrierOn ? "ON" : "OFF"), carrier.divCount);
-  //   carrierOn = carrier.carrierOn;
-  // }
-
-  // delay(1);
 }
