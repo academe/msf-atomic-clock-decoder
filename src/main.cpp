@@ -28,34 +28,37 @@
 
 // #include <ESP8266WiFi.h>
 
-// To monitor the clock input
+// Where to monitor the clock carrier.
 unsigned int GPIO_MSF_in = 14;
-
-// Second number, 0 to 59, and exceptionally 60.
-// Only increment when locked onto the minute marker.
-volatile unsigned int secondsNumber = 0;
-
-// The state when counting bits.
-
-volatile unsigned int state = 0;
-
-// True when locked to the minute marker.
-volatile bool lockedMinuteMarker = false;
 
 long lastSecondsNumber = 0;
 
 // For keeping track of the carrier states.
-
-msfCarrier *carrier;
+msfDecoderCarrier *carrier;
 
 // The bit streaming state machine
-
 MSFDecoderBitStream *stateMachine;
+
+
+
+// Constructing the date and time.
+class MSFDecoderDateTime {
+  public:
+    MSFDecoderBitStream *stateMachineObj;
+
+    MSFDecoderDateTime(MSFDecoderBitStream *stateMachine) {
+      stateMachineObj = stateMachine;
+    }
+};
+
+
+MSFDecoderDateTime *decoderDateTime;
+
 
 /**
  * @brief catches a rising or falling carrier event and parses out data
  * 
- * @todo Handles inversion if set.
+ * Handles inversion if set.
  * @todo Handles automatic detection of inversion if required.
  * 
  * The ISR has three main steps:
@@ -74,16 +77,9 @@ MSFDecoderBitStream *stateMachine;
  */
 void IRAM_ATTR Ext_INT1_MSF()
 {
-  // @todo raise a software interrupt to enable or disable
-  // the signal indicator. The indicator could be an LED on
-  // a GPIO pin or an icon on an LED display.
-
-  // @todo automatic invert if the input looks inverted.
-
   carrier->setCarrierState(digitalRead(GPIO_MSF_in));
-
-  // carrier.carrierOn(), carrier.divCount()
-  stateMachine->msfNextState(carrier);
+  stateMachine->nextState();
+  // decoderDateTime->processNextBit();
 }
 
 void setup()
@@ -130,8 +126,9 @@ void setup()
   // WiFi.mode(WIFI_OFF);
   // WiFi.forceSleepBegin();
 
-  carrier = new msfCarrier();
-  stateMachine = new MSFDecoderBitStream(); // @todo pass carrier in
+  carrier = new msfDecoderCarrier();
+  stateMachine = new MSFDecoderBitStream(carrier);
+  decoderDateTime = new MSFDecoderDateTime(stateMachine);
 }
 
 int carrierOn = 0;

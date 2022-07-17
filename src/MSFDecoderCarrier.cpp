@@ -16,7 +16,7 @@
  * @param number the number to round
  * @return int 123->100, 165->150
  */
-int msfCarrier::round100(int number) const
+int msfDecoderCarrier::round100(int number) const
 {
     int r = number % 100;
 
@@ -36,7 +36,7 @@ int msfCarrier::round100(int number) const
  * 
  * @param pinValue 
  */
-void msfCarrier::setCarrierState(int pinState)
+void msfDecoderCarrier::setCarrierState(int pinState)
 {
     if (pinState) {
         pinHighTime = millis();
@@ -58,13 +58,13 @@ void msfCarrier::setCarrierState(int pinState)
  * @return true if carrier is on
  * @return false if carrier is off
  */
-bool msfCarrier::carrierOn() const
+bool msfDecoderCarrier::carrierOn() const
 {
     return invertCarrier ? !carrierOnFlag : carrierOnFlag;
 }
 
 // @todo divCount
-unsigned int msfCarrier::divCount() const
+unsigned int msfDecoderCarrier::divCount() const
 {
     return divCountValue;
 }

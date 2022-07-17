@@ -36,7 +36,13 @@ class MSFDecoderBitStream {
     // The current state when counting bits.
     volatile States state = States::wait_minute_marker_start;
 
-    int msfNextState(msfCarrier *carrier);
+    // The carrier monitoring object.
+    msfDecoderCarrier *carrierObj;
+
+    int nextState();
+
+    // Constructor.
+    MSFDecoderBitStream(msfDecoderCarrier *carrier);
 };
 
 #endif

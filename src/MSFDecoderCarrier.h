@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <Wire.h>
 
-class msfCarrier {
+class msfDecoderCarrier {
     private:
         // The carrier state the last sequence of divisons.
         // Each division is 100mS, one tenth of a second.
