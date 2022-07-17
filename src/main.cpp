@@ -122,11 +122,18 @@ int msfNextState(volatile msfState *msfState, bool carrierOn, unsigned int divCo
   switch (msfState->state) {
     // Waiting for 5 divs carrier OFF to start the first minute,
     // or the next minute after losing the sync.
+    // @todo While in this state, check for an inverted input
+    // and toggle the inversion flag if necessary. Passing in the
+    // MSFDecoverCarrier class here would help to do that.
     case States::wait_minute_marker_start:
       msfState->lockedMinuteMarker = 0;
       msfState->secondsNumber = -1;
       if (divCount == 5 && ! carrierOn) {
         msfState->state = States::wait_minute_marker_end;
+      }
+      if (divCount > 6 && ! carrierOn) {
+        // Likely inverted. Carrier should never normally remain
+        // off for more than 5 divs.
       }
       break;
 
@@ -279,7 +286,7 @@ void IRAM_ATTR Ext_INT1_MSF()
 
   carrier.setCarrierState(digitalRead(GPIO_MSF_in));
 
-  msfNextState(&stateMachine, carrier.carrierOnState(), carrier.lastDivCount());
+  msfNextState(&stateMachine, carrier.carrierOn(), carrier.divCount());
 }
 
 void setup()

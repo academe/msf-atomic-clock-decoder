@@ -1,14 +1,20 @@
 
 #include "MSFDecoderCarrier.h"
 
-// Class for managing the carrier monitoring.
+/**
+ * @brief Class for managing the carrier monitoring.
+ *
+ * Given a carrier state change, provide the number of divs
+ * (blocks of 100mS) the carrier stayed in the previous state.
+ * A carrier that was OFF for 300mS, upon receiving an ON edge
+ * will return a time of 3 divs.
+ */
 
 /**
- * @brief round a number to the nearest unit of 10^places
+ * @brief round a number to the nearest 100
  * 
  * @param number the number to round
- * @param place example 2 = round to the nearest 100
- * @return int 
+ * @return int 123->100, 165->150
  */
 int msfCarrier::round100(int number) const
 {
@@ -23,38 +29,42 @@ int msfCarrier::round100(int number) const
 
 /**
  * @brief Set the Carrier State on a rising or fallign edge.
- * Usually will be set here in an interrupt.
+ * Usually will be set in an interrupt.
+ * 
+ * The assumption is that the carrier ON will take the
+ * GPIO digtal pin HIGH. This can be inverted if required.
  * 
  * @param pinValue 
  */
-void msfCarrier::setCarrierState(int pinValue)
+void msfCarrier::setCarrierState(int pinState)
 {
-    if (pinValue) {
-        carrierOnTime = millis();
-        divCount = round100(carrierOnTime - carrierOffTime) / 100;
-        carrierOn = true;
+    if (pinState) {
+        pinHighTime = millis();
+        divCountValue = round100(pinHighTime - pinLowTime) / 100;
+        carrierOnFlag = true;
     } else {
-        carrierOffTime = millis();
-        divCount = round100(carrierOffTime - carrierOnTime) / 100;
-        carrierOn = false;
+        pinLowTime = millis();
+        divCountValue = round100(pinLowTime - pinHighTime) / 100;
+        carrierOnFlag = false;
     }
 }
 
-// @todo add invert helpers
+// @todo add helpers to get/set/toggle the invert flag
 
 /**
  * @brief indicate whether the carrier is on, taking the invert flag
  * into account.
  * 
- * @return true 
- * @return false 
+ * @return true if carrier is on
+ * @return false if carrier is off
  */
-bool msfCarrier::carrierOnState() const
+bool msfCarrier::carrierOn() const
 {
-    return invertCarrier ? !carrierOn : carrierOn;
+    return invertCarrier ? !carrierOnFlag : carrierOnFlag;
 }
 
-unsigned int msfCarrier::lastDivCount() const
+// @todo divCount
+unsigned int msfCarrier::divCount() const
 {
-    return divCount;
+    return divCountValue;
 }
