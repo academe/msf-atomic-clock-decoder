@@ -11,6 +11,7 @@
 #include <Wire.h>               // Only needed for Arduino 1.6.5 and earlier
 #include <SPI.h>
 #include "MSFDecoderCarrier.h"
+#include "MSFDecoderBitStream.h"
 
 // #include "SSD1306Wire.h"        // legacy: #include "SSD1306.h"
 // #include <Adafruit_GFX.h>
@@ -30,10 +31,6 @@
 // To monitor the clock input
 unsigned int GPIO_MSF_in = 14;
 
-// For keeping track of the carrier states.
-
-msfCarrier carrier;
-
 // Second number, 0 to 59, and exceptionally 60.
 // Only increment when locked onto the minute marker.
 volatile unsigned int secondsNumber = 0;
@@ -47,214 +44,13 @@ volatile bool lockedMinuteMarker = false;
 
 long lastSecondsNumber = 0;
 
-enum class States {
-  wait_minute_marker_start,
-  wait_minute_marker_end,
-  wait_next_second,
-  wait_11_end,
-  wait_10_end,
-  wait_0X_bit_1_end,
-  wait_01_bit_2_end,
-  wait_01_end
-};
+// For keeping track of the carrier states.
 
+msfCarrier *carrier;
 
+// The bit streaming state machine
 
-
-
-
-// Details for the state machine.
-// Move to class MSFDecoderBitStream
-
-struct msfState {
-
-  struct {
-    bool A = 0;
-    bool B = 0;
-  } bits;
-
-  // True when locked to the minute marker, meaning the date and
-  // time is being parsed.
-  bool lockedMinuteMarker = 0;
-
-  // Seconds number, 0 to 59, and exceptionally 60.
-  // Only incremented when the minute marker has been locked in.
-  // Will be -1 until the time is locked in.
-  int secondsNumber = -1;
-
-  // The current state when counting bits.
-  States state = States::wait_minute_marker_start;
-};
-
-volatile msfState stateMachine;
-
-
-/**
- * @brief run the state machine to parse the carrier to bits A and B
- * 
- * Some state transation will provide an A and B bit pair. Others will
- * not, and are just steps to build up to the bit parsing.
- * This function will return true if there are a new pair of bits that
- * can be read from the msfState structure.
- * 
- * @param msfState
- * @return bool true if a pair of bits and a seconds number is ready
- */
-int msfNextState(volatile msfState *msfState, bool carrierOn, unsigned int divCount)
-{
-  // Replace state numbers with a short code or letter to be easier to read.
-  // swith only handles integer expressions - doh
-  // switch (sprintf("%d:%s:%d", msfState->state, carrierOn ? "H" : "L", divCount)) {
-  //   // The first half of a minute marker.
-  //   // \⎽⎽⎽⎽⎽/
-  //   //  MMMMM
-
-  //   case "MM_SEARCH:L:5":
-  //     msfState->state = 999; // The new state.
-  //     break;
-
-  //   default:
-  //     // Unexpected state; go back to minute marker searching.
-  //     break;
-  // };
-
-
-  switch (msfState->state) {
-    // Waiting for 5 divs carrier OFF to start the first minute,
-    // or the next minute after losing the sync.
-    // @todo While in this state, check for an inverted input
-    // and toggle the inversion flag if necessary. Passing in the
-    // MSFDecoverCarrier class here would help to do that.
-    case States::wait_minute_marker_start:
-      msfState->lockedMinuteMarker = 0;
-      msfState->secondsNumber = -1;
-      if (divCount == 5 && ! carrierOn) {
-        msfState->state = States::wait_minute_marker_end;
-      }
-      if (divCount > 6 && ! carrierOn) {
-        // Likely inverted. Carrier should never normally remain
-        // off for more than 5 divs.
-      }
-      break;
-
-    // Waiting for 5 divs carrier ON
-    case States::wait_minute_marker_end:
-      if (divCount == 5 && carrierOn) {
-        // Got it. That's the start of a minute.
-        msfState->lockedMinuteMarker = 1;
-        msfState->secondsNumber = 0;
-        msfState->bits.A = 1;
-        msfState->bits.B = 1;
-        msfState->state = States::wait_next_second;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-    // Waiting for the carrier OFF at the start of the second to
-    // capture the start bit and any initial "1" bits.
-    case States::wait_next_second:
-      if (carrierOn) {
-        msfState->state = States::wait_minute_marker_start;
-        break;
-      }
-      // msfState->secondsNumber++;
-      // Will be 00 or 01. Don't know which yet.
-      if (divCount == 1) {
-        msfState->state = States::wait_0X_bit_1_end;
-        break;
-      }
-      // One carrier off div after start bit, so must be a 10.
-      // Still wait until the end of the second before calling it.
-      if (divCount == 2) {
-        msfState->state = States::wait_10_end;
-        break;
-      }
-      // Two carrier off divs after the start bit, so is a 11.
-      // Still wait until the end of the second before calling it.
-      if (divCount == 3) {
-        msfState->state = States::wait_11_end;
-        break;
-      }
-      // The start of the next minute.
-      if (divCount == 5) {
-        msfState->state = States::wait_minute_marker_end;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-    // Wait for the 7 divs to the end of the second for a 11.
-    case States::wait_11_end:
-      if (divCount == 7 && carrierOn) {
-        msfState->bits.A = 1;
-        msfState->bits.B = 1;
-        msfState->secondsNumber++;
-        msfState->state = States::wait_next_second;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-    // Wait for the 8 divs to the end of the second for a 10.
-    case States::wait_10_end:
-      if (divCount == 8 && carrierOn) {
-        msfState->bits.A = 1;
-        msfState->bits.B = 0;
-        msfState->secondsNumber++;
-        msfState->state = States::wait_next_second;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-    case States::wait_0X_bit_1_end:
-      // After the starting bit, carrier was on right to the end
-      // of the second, giving a 00.
-      if (divCount == 9 && carrierOn) {
-        msfState->bits.A = 0;
-        msfState->bits.B = 0;
-        msfState->secondsNumber++;
-        msfState->state = States::wait_next_second;
-        break;
-      }
-      // Carrier was on just for 1 div, so the second bit will be 1.
-      // Wait until the end of the second before calling it (which is
-      // two carrier transistions away).
-      if (divCount == 1 && carrierOn) {
-        msfState->state = States::wait_01_bit_2_end;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-    // Got a 0 after the start bit. Wait for the end of the second bit,
-    // which will be 1 div.
-    case States::wait_01_bit_2_end:
-      if (divCount == 1 && ! carrierOn) {
-        msfState->state = States::wait_01_end;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-    // Waiting for the 7 div carrier on after a 01 to take us to
-    // the end of the second.
-    case States::wait_01_end:
-      if (divCount == 7 && carrierOn) {
-        msfState->bits.A = 0;
-        msfState->bits.B = 1;
-        msfState->secondsNumber++;
-        msfState->state = States::wait_next_second;
-        break;
-      }
-      msfState->state = States::wait_minute_marker_start;
-      break;
-
-  };
-
-  return msfState->secondsNumber;
-}
+MSFDecoderBitStream *stateMachine;
 
 /**
  * @brief catches a rising or falling carrier event and parses out data
@@ -284,9 +80,10 @@ void IRAM_ATTR Ext_INT1_MSF()
 
   // @todo automatic invert if the input looks inverted.
 
-  carrier.setCarrierState(digitalRead(GPIO_MSF_in));
+  carrier->setCarrierState(digitalRead(GPIO_MSF_in));
 
-  msfNextState(&stateMachine, carrier.carrierOn(), carrier.divCount());
+  // carrier.carrierOn(), carrier.divCount()
+  stateMachine->msfNextState(carrier);
 }
 
 void setup()
@@ -332,6 +129,9 @@ void setup()
   // WiFi.disconnect();
   // WiFi.mode(WIFI_OFF);
   // WiFi.forceSleepBegin();
+
+  carrier = new msfCarrier();
+  stateMachine = new MSFDecoderBitStream(); // @todo pass carrier in
 }
 
 int carrierOn = 0;
@@ -344,22 +144,24 @@ void loop()
   // Seconds go from 1 to 59 (or 58 or 60) with no zero-second. The zero-
   // second is the end of the second of the last minute, so will be high.
 
-  if (lastSecondsNumber != stateMachine.secondsNumber) {
+  // @todo create some helper functions for reading these
+
+  if (lastSecondsNumber != stateMachine->secondsNumber) {
 
     // Serial.printf("%d = %d%d \n", secondsNumber, bits.A, bits.B);
-    if (stateMachine.secondsNumber != -1) {
+    if (stateMachine->secondsNumber != -1) {
       Serial.printf(
         "%d %02d %d%d\n",
-        stateMachine.lockedMinuteMarker,
-        stateMachine.secondsNumber,
-        stateMachine.bits.A,
-        stateMachine.bits.B
+        stateMachine->lockedMinuteMarker,
+        stateMachine->secondsNumber,
+        stateMachine->bits.A,
+        stateMachine->bits.B
       );
     }
 
     // Serial.printf("%d\n", States::wait_minute_marker_end);
 
-    lastSecondsNumber = stateMachine.secondsNumber;
+    lastSecondsNumber = stateMachine->secondsNumber;
 
     // display.display(); // We want to do this only if a state has changed.
   }
