@@ -31,7 +31,7 @@ class MSFDecoderBitStream {
     // Seconds number, 0 to 59, and exceptionally 60.
     // Only incremented when the minute marker has been locked in.
     // Will be -1 until the time is locked in.
-    volatile int secondsNumber = -1;
+    volatile short int secondsNumber = -1;
 
     // The current state when counting bits.
     volatile States state = States::wait_minute_marker_start;
@@ -39,7 +39,7 @@ class MSFDecoderBitStream {
     // The carrier monitoring object.
     msfDecoderCarrier *carrierObj;
 
-    int nextState();
+    short int nextState();
 
     // Constructor.
     MSFDecoderBitStream(msfDecoderCarrier *carrier);

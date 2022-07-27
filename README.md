@@ -48,7 +48,7 @@ stateDiagram-v2
     wait_01_end --> wait_next_second : ON 7\nBITS=01
 ```
 
-### Error Transistion Recovery
+### Error Transition Recovery
 
 If a carrier state for an unexpected number of divs occurs, then the
 minute lock is considered lost.
@@ -68,3 +68,64 @@ stateDiagram-v2
     wait_01_end --> wait_minute_marker_start
     wait_minute_marker_end --> wait_next_second
 ```
+
+## (Binary Coded Decimal) BCD Decoding
+
+The BCD encoded digits in the bit stream are listed in the table below.
+
+| Digit Number | Value Name | Bit A From | Bit A To | Magnitude |
+| ------------ | ---------- | ---------- | -------- | --------- |
+| 0            | Year       | 17         | 20       | Tens 0-9  |
+| 1            | Year       | 21         | 24       | Units 0-9 |
+| 2            | Month      | 25         | 25       | Tens 0-1  |
+| 3            | Month      | 26         | 29       | Units 0-9 |
+| 4            | Month Day  | 30         | 31       | Tens 0-3  |
+| 5            | Month Day  | 32         | 35       | Units 0-9 |
+| 6            | Week Day   | 36         | 38       | Units 0-6 |
+| 7            | Hour       | 39         | 40       | Tens 0-2  |
+| 8            | Hour       | 41         | 44       | Units 0-9 |
+| 9            | Minute     | 45         | 47       | Tens 0-5  |
+| 10           | Minute     | 48         | 51       | Units 0-9 |
+
+So bits 17 to 15 will give is a stream of 11 decimal digits that can be
+constructed into the year, month, day of month, day of week, hour and minute.
+Each series of bits representing one digit, are binary encoded MSB first, and
+the length of the sequence will depend on the magnitude of the sequence.
+
+The digits are organised into this table as a step to developing a
+data-driven BCD decoder.
+
+# When Does The Time Apply?
+
+This is a simple question, which does not seem to be well defined in the
+specification at all. Here is what we do know.
+
+The definition of a minute, is broadcast over the previous minute.
+So the date and time, to the minute, is captured over the course of a minute,
+that that date an time applies immediately the next minute starts.
+
+Now, when does a minute start? Is it the end of the minute marker, or
+the beginning of the minute marker?
+
+Logic would suggest the minute starts at the *end* of the minute marker.
+Each second broadcasts data and state. You cannot predict what that second
+is going to broadcast until it has been broadcast, so it makes sense that
+the end of the second, when it has finished broadcasting, is the point
+at which the state that second represents now applies.
+
+However, it seems that is not the case, based on other people's research.
+My own observations confirm also that the minute starts at the *beginning*
+of the minute marker, the moment the carrier drops for its 500mS silence.
+Of course, you don't know it has dropped for 500mS under *after* it has
+done so, so how can you tell the minute marker has started, marking the
+start of the next minute?
+
+This is solved using an alternate minute marker. For seconds 52 to 59,
+bit A will broadcast `01111110`. The end of that last `0` will be a
+dropped carier for the start of the 500mS minute marker, and *that*
+is the point the next minute starts. That is when the seconds count
+resets back to zero.
+Since this state machine looks at state changes at the end of seconds
+rather than at the start of seconds, then the new minute starts at the
+end of the last bit A `0`.
+

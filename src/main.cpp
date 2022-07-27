@@ -31,7 +31,7 @@
 // Where to monitor the clock carrier.
 unsigned int GPIO_MSF_in = 14;
 
-long lastSecondsNumber = 0;
+short int lastSecondsNumber = 0;
 
 // For keeping track of the carrier states.
 msfDecoderCarrier *carrier;
@@ -43,27 +43,66 @@ MSFDecoderBitStream *stateMachine;
 
 // Constructing the date and time.
 class MSFDecoderDateTime {
+  private:
+    /**
+     * @brief Build up a BCD digit by one bit
+     * 
+     * @param digit the digit number to build on (0-10)
+     * @param msb the most significant bit number (17-51)
+     * @param lsb the least significant bit number (17-51)
+     * @param bitValue the current bit value (on or off)
+     * @param secondsNumber the seconds number (0-59)
+     */
+    void bcdBuild(short int digit, short int msb, short int lsb, short int bitValue, short int secondsNumber)
+    {
+      // Out of range; do nothing.
+
+      if (secondsNumber < msb || secondsNumber > lsb) {
+        return;
+      }
+
+      // First bit; reset the digit to zero.
+
+      if (secondsNumber == msb) {
+        bcdDigits[digit] = 0;
+      }
+
+      // Carrier bit not set; do nothing more.
+
+      if (! bitValue) {
+        return;
+      }
+
+      // Carrier bit is set; set the appropriate digit bit.
+
+      bcdDigits[digit] |= 1 << (lsb - secondsNumber);
+    }
+
   public:
     MSFDecoderBitStream *stateMachineObj;
 
-    // We will build the date and time in one structure, then copy it
+    // We will build the date and time in one structure, then copy it 
     // to another structure once it is complete. This provides an
     // unchanging copy that can be read over the full minute it applies
     // to.
     // @todo use some kind of unsigned byte value - a char?
 
-    unsigned int year = 0;
-    unsigned int month = 0;
-    unsigned int day = 0;
+    short int year = 0;
+    short int month = 0;
+    short int day = 0;
+    short int hour = 0;
+    short int minute = 0;
 
-    unsigned int hour = 0;
-    unsigned int minute = 0;
+    short int lastSecond = 0;
 
-    int lastSecond = 0;
+    // The decoded BCD digits to build up.
+
+    short int bcdDigits[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
     MSFDecoderDateTime(MSFDecoderBitStream *stateMachine) {
       stateMachineObj = stateMachine;
     }
+
 
     /**
      * @brief take the bits for the current second and incorporate them
@@ -80,6 +119,7 @@ class MSFDecoderDateTime {
      * - Reset values at the start of a sequence and build up the values bit-by-bit.
      */
     void processBit() {
+      // If we have already dealt with this second, then don't do it again.
       if (lastSecond == stateMachineObj->secondsNumber) {
         return;
       }
@@ -88,83 +128,20 @@ class MSFDecoderDateTime {
 
       // Bit 17A is the start of the year sequence. Reset the year here.
 
-      if (stateMachineObj->secondsNumber == 17) {
-        year = 0;
-      }
+      // Only bother if in the BCD digits range
 
-      // Bits 17A to 24A are the year units of ten (0X to 9X)
-      // 1 << N, is 2 to the power of N
-
-      if (stateMachineObj->secondsNumber >= 17 && stateMachineObj->secondsNumber <= 20) {
-        year += stateMachineObj->bits.A * 10 * (1 << (20 - stateMachineObj->secondsNumber));
-      }
-
-      // bits 21A to 24A are the year units (0 to 9)
-
-      if (stateMachineObj->secondsNumber >= 21 && stateMachineObj->secondsNumber <= 24) {
-        year += stateMachineObj->bits.A * (1 << (24 - stateMachineObj->secondsNumber));
-      }
-
-      // Bit 25A is the month units of 10
-
-      if (stateMachineObj->secondsNumber == 25) {
-        month = stateMachineObj->bits.A * 10;
-      }
-
-      // bits 26A to 29A are the month units (0 to 9)
-
-      if (stateMachineObj->secondsNumber >= 26 && stateMachineObj->secondsNumber <= 29) {
-        month += stateMachineObj->bits.A * (1 << (29 - stateMachineObj->secondsNumber));
-      }
-
-      // Bit 30A is the start of the day sequence. Reset the day here.
-
-      if (stateMachineObj->secondsNumber == 30) {
-        day = 0;
-      }
-
-      // Bits 30A to 31A are the day units of ten (0X to 9X)
-
-      if (stateMachineObj->secondsNumber >= 30 && stateMachineObj->secondsNumber <= 31) {
-        day += stateMachineObj->bits.A * 10 * (1 << (31 - stateMachineObj->secondsNumber));
-      }
-
-      // bits 32A to 35A are the day units (0 to 9)
-
-      if (stateMachineObj->secondsNumber >= 32 && stateMachineObj->secondsNumber <= 35) {
-        day += stateMachineObj->bits.A * (1 << (35 - stateMachineObj->secondsNumber));
-      }
-
-      // Bits 39A to 40A are the hour units of ten (0X to 2X)
-
-      if (stateMachineObj->secondsNumber == 39) {
-        hour = 0;
-      }
-
-      if (stateMachineObj->secondsNumber >= 39 && stateMachineObj->secondsNumber <= 40) {
-        hour += stateMachineObj->bits.A * 10 * (1 << (40 - stateMachineObj->secondsNumber));
-      }
-
-      // bits 41A to 44A are the hour units (0 to 9)
-
-      if (stateMachineObj->secondsNumber >= 41 && stateMachineObj->secondsNumber <= 44) {
-        hour += stateMachineObj->bits.A * (1 << (44 - stateMachineObj->secondsNumber));
-      }
-
-      // Bits 45A to 47A are the minute units of ten (0X to 5X)
-
-      if (stateMachineObj->secondsNumber == 45) {
-        minute = 0;
-      }
-
-      if (stateMachineObj->secondsNumber >= 45 && stateMachineObj->secondsNumber <= 47) {
-        minute += stateMachineObj->bits.A * 10 * (1 << (47 - stateMachineObj->secondsNumber));
-      }
-
-      // bits 48A to 51A are the minute units (0 to 9)
-
-      if (stateMachineObj->secondsNumber >= 48 && stateMachineObj->secondsNumber <= 51) {
-        minute += stateMachineObj->bits.A * (1 << (51 - stateMachineObj->secondsNumber));
+      if (stateMachineObj->secondsNumber >= 17 || stateMachineObj->secondsNumber <= 51) {
+        bcdBuild(0, 17, 20, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(1, 21, 24, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(2, 25, 25, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(3, 26, 29, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(4, 30, 31, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(5, 32, 35, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(6, 36, 38, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(7, 39, 40, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(8, 41, 44, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(9, 45, 47, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
+        bcdBuild(10, 48, 51, stateMachineObj->bits.A, stateMachineObj->secondsNumber);
       }
     }
 };
@@ -266,7 +243,7 @@ void loop()
     // Serial.printf("%d = %d%d \n", secondsNumber, bits.A, bits.B);
     if (stateMachine->secondsNumber != -1) {
       Serial.printf(
-        "%d: '%d%d' %02d-%02d-%02d %02d:%02d:%02d\n",
+        "%d: '%d%d' %02d-%02d-%02d %02d:%02d:%02d %d%d-%d%d-%d%d (%d) %d%d:%d%d:%02d\n",
         stateMachine->lockedMinuteMarker,
         stateMachine->bits.A,
         stateMachine->bits.B,
@@ -275,6 +252,18 @@ void loop()
         decoderDateTime->day,
         decoderDateTime->hour,
         decoderDateTime->minute,
+        stateMachine->secondsNumber,
+        decoderDateTime->bcdDigits[0],
+        decoderDateTime->bcdDigits[1],
+        decoderDateTime->bcdDigits[2],
+        decoderDateTime->bcdDigits[3],
+        decoderDateTime->bcdDigits[4],
+        decoderDateTime->bcdDigits[5],
+        decoderDateTime->bcdDigits[6],
+        decoderDateTime->bcdDigits[7],
+        decoderDateTime->bcdDigits[8],
+        decoderDateTime->bcdDigits[9],
+        decoderDateTime->bcdDigits[10],
         stateMachine->secondsNumber
       );
     }

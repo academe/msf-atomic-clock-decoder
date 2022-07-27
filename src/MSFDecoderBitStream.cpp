@@ -20,10 +20,10 @@ MSFDecoderBitStream::MSFDecoderBitStream(msfDecoderCarrier *carrier) {
  * 
  * @return bool true if a pair of bits and a seconds number is ready
  */
-int MSFDecoderBitStream::nextState()
+short int MSFDecoderBitStream::nextState()
 {
     bool carrierOn = carrierObj->carrierOn();
-    unsigned int divCount = carrierObj->divCount();
+    short int divCount = carrierObj->divCount();
 
     switch (state) {
         // Waiting for 5 divs carrier OFF to start the first minute,
